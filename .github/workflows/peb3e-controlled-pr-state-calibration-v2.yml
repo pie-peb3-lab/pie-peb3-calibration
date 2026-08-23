@@ -1,0 +1,52 @@
+name: PEB-3E Controlled PR State Calibration V2
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .pie-calibration/peb3e-v2-execute-trigger.txt
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  controlled-pr-state-calibration-v2:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'gycha0109-beep'
+    runs-on: ubuntu-latest
+    env:
+      PEB3_APP_ID: ${{ vars.PEB3_APP_ID }}
+      PEB3_APP_PRIVATE_KEY: ${{ secrets.PEB3_APP_PRIVATE_KEY }}
+    steps:
+      - name: Checkout calibration repository
+        uses: actions/checkout@v4
+
+      - name: Execute governed controlled non-production calibration V2
+        run: python .pie-calibration/peb3e_controlled_calibration_v2.py
+
+      - name: Publish calibration evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: peb3e-controlled-calibration-v2-evidence
+          path: peb3e-controlled-calibration-v2-evidence.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish sanitized result to trigger PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f peb3e-controlled-calibration-v2-evidence.json
+          jq -n --rawfile evidence peb3e-controlled-calibration-v2-evidence.json '{body:("Calibration infrastructure trigger only. This PR is not the formal PEB-3E target.\n\n## PEB-3E V2 sanitized execution evidence\n\n```json\n"+$evidence+"```\n")}' > pr-update.json
+          curl --fail-with-body -sS -X PATCH \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
+            --data-binary @pr-update.json >/dev/null
+          rm -f pr-update.json
