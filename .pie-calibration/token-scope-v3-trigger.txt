@@ -1,0 +1,2 @@
+PEB-3 token scope V3 verification trigger.
+No production authority. No formal PR state mutation.
