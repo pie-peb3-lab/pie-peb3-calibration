@@ -1,0 +1,3 @@
+PEB-3 token scope V3 trigger.
+Requires contents:write + pull_requests:write on isolated repository token only.
+No formal PR #1 state mutation.

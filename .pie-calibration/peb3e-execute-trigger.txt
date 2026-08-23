@@ -1,0 +1,4 @@
+PEB-3E controlled non-production execution trigger.
+Formal target: PR #1 only.
+Expected HEAD: 295d73c9b263280705fe0ad66cd96d0edc5ee47c.
+Production authority: false.
