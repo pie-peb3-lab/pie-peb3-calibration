@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   prove-token-scope:
@@ -184,10 +185,38 @@ with open('peb3-token-scope-evidence.json', 'w', encoding='utf-8') as fh:
 PY
           rm -f token-repositories-readback.json
 
-      - name: Publish sanitized evidence
+      - name: Publish sanitized evidence artifact
         uses: actions/upload-artifact@v4
         with:
           name: peb3-token-scope-evidence
           path: peb3-token-scope-evidence.json
           if-no-files-found: error
           retention-days: 7
+
+      - name: Publish sanitized evidence to trigger PR
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          python - "$PR_NUMBER" > pr-update.json <<'PY'
+import json, sys
+pr_number = sys.argv[1]
+evidence = json.load(open('peb3-token-scope-evidence.json', encoding='utf-8'))
+body = (
+    'Calibration infrastructure only. This PR exists solely to trigger the token-scope evidence workflow. '
+    'It is not the formal PEB-3E target.\n\n'
+    '## Sanitized provider evidence\n\n'
+    '```json\n' + json.dumps(evidence, indent=2, sort_keys=True) + '\n```\n'
+)
+print(json.dumps({'body': body}))
+PY
+          curl --fail-with-body -sS -X PATCH \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
+            --data-binary @pr-update.json >/dev/null
+          rm -f pr-update.json
