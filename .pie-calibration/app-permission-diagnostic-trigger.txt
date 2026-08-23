@@ -1,0 +1,2 @@
+PEB-3 installation permission approval verification trigger.
+No production authority. No formal PR state mutation.
