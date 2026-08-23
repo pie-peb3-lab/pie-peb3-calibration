@@ -1,0 +1,4 @@
+PEB-3E V2 formal controlled non-production execution trigger.
+Target: PR #1, exact HEAD 295d73c9b263280705fe0ad66cd96d0edc5ee47c.
+Sequence: DRAFT -> READY -> independent readback -> DRAFT rollback -> independent readback.
+Production, automation, and pilot authority remain false.
