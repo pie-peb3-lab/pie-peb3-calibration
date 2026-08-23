@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - .github/workflows/peb3-token-scope-evidence.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - .pie-calibration/token-scope-trigger.txt
   workflow_dispatch:
 
 permissions:
@@ -92,7 +96,7 @@ PY
             --data-binary "@$token_request" > "$token_response"
 
           python - "$app_json" "$installations_json" "$token_response" "$EXPECTED_OWNER" "$EXPECTED_FULL_NAME" "$GITHUB_ENV" <<'PY'
-import json, os, sys
+import json, sys
 app_path, installations_path, token_path, owner, full_name, env_path = sys.argv[1:]
 app = json.load(open(app_path, encoding='utf-8'))
 installations = json.load(open(installations_path, encoding='utf-8'))
