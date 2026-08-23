@@ -1,55 +1,16 @@
-name: PEB-3E Controlled PR State Calibration
+name: PEB-3E Controlled PR State Calibration V1 Retired
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - .pie-calibration/peb3e-execute-trigger.txt
   workflow_dispatch:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
-  controlled-pr-state-calibration:
-    if: >-
-      github.event_name != 'pull_request' ||
-      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'gycha0109-beep')
+  retired:
     runs-on: ubuntu-latest
-    env:
-      PEB3_APP_ID: ${{ vars.PEB3_APP_ID }}
-      PEB3_APP_PRIVATE_KEY: ${{ secrets.PEB3_APP_PRIVATE_KEY }}
     steps:
-      - name: Checkout calibration repository
-        uses: actions/checkout@v4
-
-      - name: Execute governed controlled non-production calibration
-        run: python .pie-calibration/peb3e_controlled_calibration.py
-
-      - name: Publish calibration evidence artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: peb3e-controlled-calibration-evidence
-          path: peb3e-controlled-calibration-evidence.json
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Publish sanitized result to trigger PR
-        if: always() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        shell: bash
+      - name: Refuse superseded execution path
         run: |
-          set -euo pipefail
-          test -f peb3e-controlled-calibration-evidence.json
-          python -c 'import json; e=open("peb3e-controlled-calibration-evidence.json",encoding="utf-8").read(); print(json.dumps({"body":"Calibration infrastructure trigger only. This PR is not the formal PEB-3E target.\n\n## PEB-3E sanitized execution evidence\n\n```json\n"+e+"```\n"}))' > pr-update.json
-          curl --fail-with-body -sS -X PATCH \
-            -H 'Accept: application/vnd.github+json' \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
-            --data-binary @pr-update.json >/dev/null
-          rm -f pr-update.json
+          echo 'PEB-3E V1 is retired. No dispatch performed.'
+          exit 0
