@@ -23,59 +23,57 @@ jobs:
       EXPECTED_FULL_NAME: pie-peb3-lab/pie-peb3-calibration
       PEB3_APP_ID: ${{ vars.PEB3_APP_ID }}
       PEB3_APP_PRIVATE_KEY: ${{ secrets.PEB3_APP_PRIVATE_KEY }}
+
     steps:
-      - name: Probe token scope without exposing credentials
+      - name: Probe provider token scope
+        id: probe
         shell: bash
         run: |
           set -u
-          status="FAIL"
-          reason="UNKNOWN"
-          http_status=""
+
+          rm -f peb3-token-scope-evidence.json peb3-token-scope-diagnostic.json
           key_file="$(mktemp)"
           app_json="$(mktemp)"
           installations_json="$(mktemp)"
           token_response="$(mktemp)"
           token_request="$(mktemp)"
           readback_json="$(mktemp)"
-          installation_id_file="$(mktemp)"
-          trap 'rm -f "$key_file" "$app_json" "$installations_json" "$token_response" "$token_request" "$readback_json" "$installation_id_file"' EXIT
+          trap 'rm -f "$key_file" "$app_json" "$installations_json" "$token_response" "$token_request" "$readback_json"' EXIT
 
-          write_diagnostic() {
-            python - "$status" "$reason" "$http_status" <<'PY'
-import json, os, sys
-status, reason, http_status = sys.argv[1:]
-payload = {
-    "contract_version": "PEB3_TOKEN_SCOPE_DIAGNOSTIC_V1",
-    "status": status,
-    "reason": reason,
-    "http_status": http_status or None,
-    "app_id_configured": bool(os.environ.get("PEB3_APP_ID")),
-    "private_key_secret_configured": bool(os.environ.get("PEB3_APP_PRIVATE_KEY")),
-    "credential_values_included": False,
-}
-with open("peb3-token-scope-diagnostic.json", "w", encoding="utf-8") as fh:
-    json.dump(payload, fh, indent=2, sort_keys=True)
-    fh.write("\n")
-PY
+          diagnostic() {
+            local reason="$1"
+            local http_status="${2:-}"
+            jq -n \
+              --arg reason "$reason" \
+              --arg http_status "$http_status" \
+              --argjson app_id_configured "$([ -n "${PEB3_APP_ID:-}" ] && echo true || echo false)" \
+              --argjson private_key_secret_configured "$([ -n "${PEB3_APP_PRIVATE_KEY:-}" ] && echo true || echo false)" \
+              '{
+                contract_version:"PEB3_TOKEN_SCOPE_DIAGNOSTIC_V2",
+                status:"BLOCKED",
+                reason:$reason,
+                http_status:(if $http_status == "" then null else $http_status end),
+                app_id_configured:$app_id_configured,
+                private_key_secret_configured:$private_key_secret_configured,
+                credential_values_included:false
+              }' > peb3-token-scope-diagnostic.json
+            echo "probe_status=blocked" >> "$GITHUB_OUTPUT"
           }
 
           if [ -z "${PEB3_APP_ID:-}" ]; then
-            reason="APP_ID_VARIABLE_MISSING"
-            write_diagnostic
+            diagnostic "APP_ID_VARIABLE_MISSING"
             exit 0
           fi
 
           if [ -z "${PEB3_APP_PRIVATE_KEY:-}" ]; then
-            reason="PRIVATE_KEY_SECRET_MISSING"
-            write_diagnostic
+            diagnostic "PRIVATE_KEY_SECRET_MISSING"
             exit 0
           fi
 
           printf '%s' "$PEB3_APP_PRIVATE_KEY" > "$key_file"
           chmod 600 "$key_file"
           if ! openssl pkey -in "$key_file" -noout >/dev/null 2>&1; then
-            reason="PRIVATE_KEY_PARSE_FAILED"
-            write_diagnostic
+            diagnostic "PRIVATE_KEY_PARSE_FAILED"
             exit 0
           fi
 
@@ -86,165 +84,166 @@ PY
           now="$(date +%s)"
           iat="$((now - 60))"
           exp="$((now + 540))"
-          header='{"alg":"RS256","typ":"JWT"}'
-          payload="$(printf '{\"iat\":%s,\"exp\":%s,\"iss\":\"%s\"}' "$iat" "$exp" "$PEB3_APP_ID")"
-          unsigned="$(printf '%s' "$header" | b64url).$(printf '%s' "$payload" | b64url)"
+          header="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)"
+          payload="$(jq -nc --argjson iat "$iat" --argjson exp "$exp" --arg iss "$PEB3_APP_ID" '{iat:$iat,exp:$exp,iss:$iss}' | b64url)"
+          unsigned="$header.$payload"
+
           if ! signature="$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign "$key_file" | b64url)"; then
-            reason="JWT_SIGN_FAILED"
-            write_diagnostic
+            diagnostic "APP_JWT_SIGNING_FAILED"
             exit 0
           fi
           app_jwt="$unsigned.$signature"
           echo "::add-mask::$app_jwt"
 
-          http_status="$(curl -sS -o "$app_json" -w '%{http_code}' \
+          app_status="$(curl -sS -o "$app_json" -w '%{http_code}' \
             -H 'Accept: application/vnd.github+json' \
             -H "Authorization: Bearer $app_jwt" \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             https://api.github.com/app || true)"
-          if [ "$http_status" != "200" ]; then
-            reason="APP_JWT_AUTH_FAILED"
-            write_diagnostic
+          if [ "$app_status" != "200" ]; then
+            diagnostic "APP_JWT_AUTH_FAILED" "$app_status"
             exit 0
           fi
 
-          http_status="$(curl -sS -o "$installations_json" -w '%{http_code}' \
+          installations_status="$(curl -sS -o "$installations_json" -w '%{http_code}' \
             -H 'Accept: application/vnd.github+json' \
             -H "Authorization: Bearer $app_jwt" \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             https://api.github.com/app/installations || true)"
-          if [ "$http_status" != "200" ]; then
-            reason="INSTALLATION_LIST_READ_FAILED"
-            write_diagnostic
+          if [ "$installations_status" != "200" ]; then
+            diagnostic "INSTALLATION_LIST_FAILED" "$installations_status"
             exit 0
           fi
 
-          if ! python - "$installations_json" "$EXPECTED_OWNER" "$installation_id_file" <<'PY'
-import json, sys
-path, owner, out = sys.argv[1:]
-data = json.load(open(path, encoding="utf-8"))
-matches = [x for x in data if (x.get("account") or {}).get("login") == owner]
-if len(matches) != 1:
-    raise SystemExit(1)
-item = matches[0]
-if item.get("repository_selection") != "selected":
-    raise SystemExit(1)
-with open(out, "w", encoding="utf-8") as fh:
-    fh.write(str(item["id"]))
-PY
-          then
-            reason="INSTALLATION_SCOPE_ASSERTION_FAILED"
-            http_status=""
-            write_diagnostic
+          installation_count="$(jq --arg owner "$EXPECTED_OWNER" '[.[] | select(.account.login == $owner)] | length' "$installations_json")"
+          if [ "$installation_count" != "1" ]; then
+            diagnostic "INSTALLATION_IDENTITY_NOT_UNIQUE"
             exit 0
           fi
-          installation_id="$(cat "$installation_id_file")"
 
-          printf '{"repositories":["%s"],"permissions":{"pull_requests":"write"}}' "$EXPECTED_REPOSITORY" > "$token_request"
-          http_status="$(curl -sS -o "$token_response" -w '%{http_code}' -X POST \
+          installation_id="$(jq -r --arg owner "$EXPECTED_OWNER" '.[] | select(.account.login == $owner) | .id' "$installations_json")"
+          repository_selection="$(jq -r --arg owner "$EXPECTED_OWNER" '.[] | select(.account.login == $owner) | .repository_selection' "$installations_json")"
+          if [ "$repository_selection" != "selected" ]; then
+            diagnostic "INSTALLATION_REPOSITORY_SELECTION_NOT_SELECTED"
+            exit 0
+          fi
+
+          jq -nc \
+            --arg repo "$EXPECTED_REPOSITORY" \
+            '{repositories:[$repo],permissions:{pull_requests:"write"}}' > "$token_request"
+
+          token_status="$(curl -sS -o "$token_response" -w '%{http_code}' -X POST \
             -H 'Accept: application/vnd.github+json' \
             -H "Authorization: Bearer $app_jwt" \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "https://api.github.com/app/installations/$installation_id/access_tokens" \
             --data-binary "@$token_request" || true)"
-          if [ "$http_status" != "201" ]; then
-            reason="TOKEN_MINT_FAILED"
-            write_diagnostic
+          if [ "$token_status" != "201" ]; then
+            diagnostic "TOKEN_MINT_FAILED" "$token_status"
             exit 0
           fi
 
-          token="$(python - "$token_response" <<'PY'
-import json, sys
-response = json.load(open(sys.argv[1], encoding="utf-8"))
-print(response.get("token") or "")
-PY
-          )"
+          token="$(jq -r '.token // empty' "$token_response")"
           if [ -z "$token" ]; then
-            reason="TOKEN_VALUE_MISSING_FROM_PROVIDER_RESPONSE"
-            http_status="201"
-            write_diagnostic
+            diagnostic "TOKEN_VALUE_MISSING_FROM_PROVIDER_RESPONSE"
             exit 0
           fi
           echo "::add-mask::$token"
 
-          http_status="$(curl -sS -o "$readback_json" -w '%{http_code}' \
+          repo_set="$(jq -c '[.repositories[].full_name] | sort' "$token_response")"
+          if [ "$repo_set" != "[\"$EXPECTED_FULL_NAME\"]" ]; then
+            diagnostic "TOKEN_REPOSITORY_SCOPE_MISMATCH"
+            exit 0
+          fi
+
+          pr_permission="$(jq -r '.permissions.pull_requests // empty' "$token_response")"
+          if [ "$pr_permission" != "write" ]; then
+            diagnostic "TOKEN_PULL_REQUEST_PERMISSION_NOT_WRITE"
+            exit 0
+          fi
+
+          extra_permissions="$(jq -c '[.permissions | to_entries[] | select(.key != "pull_requests" and .key != "metadata")]' "$token_response")"
+          if [ "$extra_permissions" != "[]" ]; then
+            diagnostic "TOKEN_EXTRA_PERMISSIONS_PRESENT"
+            exit 0
+          fi
+
+          metadata_permission="$(jq -r '.permissions.metadata // "read"' "$token_response")"
+          if [ "$metadata_permission" != "read" ]; then
+            diagnostic "TOKEN_METADATA_PERMISSION_NOT_READ"
+            exit 0
+          fi
+
+          expires_at="$(jq -r '.expires_at // empty' "$token_response")"
+          if [ -z "$expires_at" ]; then
+            diagnostic "TOKEN_EXPIRY_MISSING"
+            exit 0
+          fi
+
+          readback_status="$(curl -sS -o "$readback_json" -w '%{http_code}' \
             -H 'Accept: application/vnd.github+json' \
             -H "Authorization: Bearer $token" \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             https://api.github.com/installation/repositories || true)"
-          if [ "$http_status" != "200" ]; then
-            reason="TOKEN_REPOSITORY_READBACK_FAILED"
-            write_diagnostic
+          if [ "$readback_status" != "200" ]; then
+            diagnostic "TOKEN_REPOSITORY_READBACK_FAILED" "$readback_status"
             exit 0
           fi
 
-          if ! python - "$app_json" "$installations_json" "$token_response" "$readback_json" "$EXPECTED_OWNER" "$EXPECTED_FULL_NAME" <<'PY'
-import json, sys
-app_path, installations_path, token_path, readback_path, owner, full_name = sys.argv[1:]
-app = json.load(open(app_path, encoding="utf-8"))
-installations = json.load(open(installations_path, encoding="utf-8"))
-response = json.load(open(token_path, encoding="utf-8"))
-readback = json.load(open(readback_path, encoding="utf-8"))
-
-matches = [x for x in installations if (x.get("account") or {}).get("login") == owner]
-if len(matches) != 1:
-    raise SystemExit(1)
-installation = matches[0]
-repo_names = sorted((r.get("full_name") or "") for r in response.get("repositories", []))
-readback_names = sorted((r.get("full_name") or "") for r in readback.get("repositories", []))
-permissions = response.get("permissions") or {}
-expires_at = response.get("expires_at")
-
-if repo_names != [full_name] or readback_names != [full_name]:
-    raise SystemExit(1)
-if permissions.get("pull_requests") != "write":
-    raise SystemExit(1)
-if set(permissions) - {"pull_requests", "metadata"}:
-    raise SystemExit(1)
-if permissions.get("metadata") not in (None, "read"):
-    raise SystemExit(1)
-if not expires_at:
-    raise SystemExit(1)
-
-sanitized = {
-    "contract_version": "PEB3_TOKEN_SCOPE_PROVIDER_EVIDENCE_V1",
-    "provider": "GITHUB",
-    "app": {
-        "id": app.get("id"),
-        "slug": app.get("slug"),
-        "owner": (app.get("owner") or {}).get("login"),
-        "registered_permissions": app.get("permissions") or {},
-    },
-    "installation": {
-        "id": installation.get("id"),
-        "account": (installation.get("account") or {}).get("login"),
-        "repository_selection": installation.get("repository_selection"),
-        "permissions": installation.get("permissions") or {},
-    },
-    "token": {
-        "repository_set": repo_names,
-        "permissions": permissions,
-        "expires_at": expires_at,
-        "independent_repository_readback": readback_names,
-        "independent_repository_readback_verified": True,
-        "token_value_included": False,
-    },
-}
-with open("peb3-token-scope-evidence.json", "w", encoding="utf-8") as fh:
-    json.dump(sanitized, fh, indent=2, sort_keys=True)
-    fh.write("\n")
-PY
-          then
-            reason="TOKEN_SCOPE_ASSERTION_FAILED"
-            http_status=""
-            write_diagnostic
+          independent_repo_set="$(jq -c '[.repositories[].full_name] | sort' "$readback_json")"
+          if [ "$independent_repo_set" != "[\"$EXPECTED_FULL_NAME\"]" ]; then
+            diagnostic "INDEPENDENT_REPOSITORY_READBACK_MISMATCH"
             exit 0
           fi
 
-          status="PASS"
-          reason="NONE"
-          http_status="200"
-          write_diagnostic
+          jq -n \
+            --argjson app "$(cat "$app_json")" \
+            --argjson installations "$(cat "$installations_json")" \
+            --argjson response "$(cat "$token_response")" \
+            --argjson readback "$(cat "$readback_json")" \
+            --arg owner "$EXPECTED_OWNER" \
+            --arg full_name "$EXPECTED_FULL_NAME" \
+            '{
+              contract_version:"PEB3_TOKEN_SCOPE_PROVIDER_EVIDENCE_V2",
+              provider:"GITHUB",
+              app:{
+                id:$app.id,
+                slug:$app.slug,
+                owner:$app.owner.login,
+                registered_permissions:$app.permissions
+              },
+              installation:(
+                $installations
+                | map(select(.account.login == $owner))
+                | .[0]
+                | {
+                    id:.id,
+                    account:.account.login,
+                    repository_selection:.repository_selection,
+                    permissions:.permissions
+                  }
+              ),
+              token:{
+                repository_set:($response.repositories | map(.full_name) | sort),
+                permissions:$response.permissions,
+                expires_at:$response.expires_at,
+                independent_repository_readback:($readback.repositories | map(.full_name) | sort),
+                independent_repository_readback_verified:(($readback.repositories | map(.full_name) | sort) == [$full_name]),
+                token_value_included:false
+              }
+            }' > peb3-token-scope-evidence.json
+
+          rm -f "$token_response"
+          echo "probe_status=pass" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized evidence artifact
+        if: steps.probe.outputs.probe_status == 'pass'
+        uses: actions/upload-artifact@v4
+        with:
+          name: peb3-token-scope-evidence
+          path: peb3-token-scope-evidence.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Publish sanitized result to trigger PR
         if: always() && github.event_name == 'pull_request'
@@ -254,51 +253,50 @@ PY
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          python - "$PR_NUMBER" > pr-update.json <<'PY'
-import json, os, sys
-if os.path.exists("peb3-token-scope-evidence.json"):
-    result = json.load(open("peb3-token-scope-evidence.json", encoding="utf-8"))
-    heading = "Sanitized provider evidence"
-else:
-    result = json.load(open("peb3-token-scope-diagnostic.json", encoding="utf-8"))
-    heading = "Sanitized diagnostic"
-body = (
-    "Calibration infrastructure only. This PR exists solely to trigger the token-scope evidence workflow. "
-    "It is not the formal PEB-3E target.\n\n"
-    f"## {heading}\n\n"
-    "```json\n" + json.dumps(result, indent=2, sort_keys=True) + "\n```\n"
-)
-print(json.dumps({"body": body}))
-PY
-          curl --fail-with-body -sS -X PATCH \
+
+          if [ -f peb3-token-scope-evidence.json ]; then
+            result_file="peb3-token-scope-evidence.json"
+            heading="Sanitized provider evidence"
+          elif [ -f peb3-token-scope-diagnostic.json ]; then
+            result_file="peb3-token-scope-diagnostic.json"
+            heading="Sanitized diagnostic"
+          else
+            jq -n '{
+              contract_version:"PEB3_TOKEN_SCOPE_DIAGNOSTIC_V2",
+              status:"BLOCKED",
+              reason:"PROBE_TERMINATED_WITHOUT_RESULT_FILE",
+              credential_values_included:false
+            }' > peb3-token-scope-diagnostic.json
+            result_file="peb3-token-scope-diagnostic.json"
+            heading="Sanitized diagnostic"
+          fi
+
+          {
+            echo "Calibration infrastructure only. This PR exists solely to trigger the token-scope evidence workflow."
+            echo "It is not the formal PEB-3E target."
+            echo
+            echo "## $heading"
+            echo
+            echo '```json'
+            cat "$result_file"
+            echo '```'
+          } > pr-body.md
+
+          jq -n --rawfile body pr-body.md '{body:$body}' > pr-update.json
+          patch_status="$(curl -sS -o pr-update-response.json -w '%{http_code}' -X PATCH \
             -H 'Accept: application/vnd.github+json' \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
-            --data-binary @pr-update.json >/dev/null
-          rm -f pr-update.json
+            --data-binary @pr-update.json || true)"
+          if [ "$patch_status" != "200" ]; then
+            echo "::error::Failed to publish sanitized result to PR; HTTP $patch_status"
+            exit 1
+          fi
+          rm -f pr-update.json pr-update-response.json pr-body.md
 
-      - name: Publish sanitized evidence artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: peb3-token-scope-result
-          path: |
-            peb3-token-scope-evidence.json
-            peb3-token-scope-diagnostic.json
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Fail closed when scope proof did not pass
+      - name: Enforce provider proof success
         if: always()
         shell: bash
         run: |
-          python - <<'PY'
-import json, os
-path = "peb3-token-scope-diagnostic.json"
-if not os.path.exists(path):
-    raise SystemExit(1)
-data = json.load(open(path, encoding="utf-8"))
-if data.get("status") != "PASS":
-    raise SystemExit(1)
-PY
+          test "${{ steps.probe.outputs.probe_status }}" = "pass"
