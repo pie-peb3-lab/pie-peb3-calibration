@@ -1,0 +1,52 @@
+name: PEB-3 App Installation Permission Diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .pie-calibration/app-permission-diagnostic-trigger.txt
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  diagnose:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'gycha0109-beep'
+    runs-on: ubuntu-latest
+    env:
+      PEB3_APP_ID: ${{ vars.PEB3_APP_ID }}
+      PEB3_APP_PRIVATE_KEY: ${{ secrets.PEB3_APP_PRIVATE_KEY }}
+      EXPECTED_OWNER: pie-peb3-lab
+    steps:
+      - name: Read registered and installed permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_file="$(mktemp)"
+          app_json="$(mktemp)"
+          installs_json="$(mktemp)"
+          trap 'rm -f "$key_file" "$app_json" "$installs_json"' EXIT
+          printf '%s' "$PEB3_APP_PRIVATE_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          now="$(date +%s)"
+          header="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)"
+          payload="$(jq -nc --argjson iat "$((now-60))" --argjson exp "$((now+540))" --arg iss "$PEB3_APP_ID" '{iat:$iat,exp:$exp,iss:$iss}' | b64url)"
+          unsigned="$header.$payload"
+          signature="$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign "$key_file" | b64url)"
+          jwt="$unsigned.$signature"
+          echo "::add-mask::$jwt"
+          curl --fail-with-body -sS -H 'Accept: application/vnd.github+json' -H "Authorization: Bearer $jwt" -H 'X-GitHub-Api-Version: 2022-11-28' https://api.github.com/app > "$app_json"
+          curl --fail-with-body -sS -H 'Accept: application/vnd.github+json' -H "Authorization: Bearer $jwt" -H 'X-GitHub-Api-Version: 2022-11-28' https://api.github.com/app/installations > "$installs_json"
+          jq -n --argjson app "$(cat "$app_json")" --argjson installs "$(cat "$installs_json")" --arg owner "$EXPECTED_OWNER" '{contract_version:"PEB3_APP_INSTALLATION_PERMISSION_DIAGNOSTIC_V1",app:{id:$app.id,slug:$app.slug,registered_permissions:$app.permissions},installation:($installs|map(select(.account.login==$owner))|.[0]|{id:.id,account:.account.login,repository_selection:.repository_selection,permissions:.permissions}),credential_values_included:false}' > peb3-app-installation-permission-diagnostic.json
+      - name: Publish diagnostic to trigger PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          jq -n --rawfile evidence peb3-app-installation-permission-diagnostic.json '{body:("Calibration infrastructure only.\n\n## App installation permission diagnostic\n\n```json\n"+$evidence+"```\n")}' > pr-update.json
+          curl --fail-with-body -sS -X PATCH -H 'Accept: application/vnd.github+json' -H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28' "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --data-binary @pr-update.json >/dev/null
+          rm -f pr-update.json
