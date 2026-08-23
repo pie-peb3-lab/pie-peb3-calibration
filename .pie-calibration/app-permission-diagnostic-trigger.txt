@@ -1,0 +1,2 @@
+Read GitHub App registered permissions and pie-peb3-lab installation permissions only.
+No token value. No PR #1 mutation.
