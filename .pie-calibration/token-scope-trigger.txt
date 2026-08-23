@@ -1,0 +1,2 @@
+PEB-3 token-scope evidence trigger only.
+No production authority. No formal PR state mutation.
