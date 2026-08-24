@@ -1,0 +1,169 @@
+name: AUTO-2 Replay Calibration
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  replay:
+    if: github.event.pull_request.head.ref == 'calibration/auto2-replay-harness-20260824'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact synthetic target head
+        uses: actions/checkout@v4
+        with:
+          repository: pie-peb3-lab/pie-peb3-calibration
+          ref: bee68c0635fb5001d42168ddac23de04b1e526df
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact synthetic target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "bee68c0635fb5001d42168ddac23de04b1e526df"
+          test -f .review/project.yml
+          test -f .review/intelligence/config.yml
+          test -f .pie-auto2/synthetic-target.md
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact PIE authority revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check \
+            "git+https://github.com/gycha0109-beep/Project_Intelligence_Engine.git@8ec5c0b4194522a50e395088d00b9bff5db9d24b"
+          pie-trust-prospective run-github-pr-trusted --help >/dev/null
+
+      - name: Run governed AUTO-2 bridge core
+        id: bridge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result_file="${RUNNER_TEMP}/auto2-cli-result.json"
+          output_root="${RUNNER_TEMP}/auto2-replay"
+
+          pie-trust-prospective run-github-pr-trusted 8 \
+            --target-repository pie-peb3-lab/pie-peb3-calibration \
+            --event-head-sha bee68c0635fb5001d42168ddac23de04b1e526df \
+            --event-base-sha 5673310fe66d74da5d31f165ffc4314e0d845740 \
+            --pie-revision 8ec5c0b4194522a50e395088d00b9bff5db9d24b \
+            --trust-request-path evidence/trust/requests/auto2-synthetic-calibration-pr8-20260824.json \
+            --trust-request-sha256 f59d36876dc3ef1ddb609584ea9b18998d45bdc39f162edb309e731350539dd3 \
+            --repository-root "${GITHUB_WORKSPACE}" \
+            --profile .review/project.yml \
+            --config .review/intelligence/config.yml \
+            --output-root "${output_root}" \
+            > "${result_file}"
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+
+          result_file = Path(os.environ["RUNNER_TEMP"]) / "auto2-cli-result.json"
+          result = json.loads(result_file.read_text(encoding="utf-8"))
+          if result.get("valid") is not True:
+              raise SystemExit("AUTO2_CALIBRATION_INVALID_RESULT")
+          if result.get("status") != "READY_FOR_HUMAN_REVIEW":
+              raise SystemExit("AUTO2_CALIBRATION_BAD_TERMINAL_STATE")
+          for field in (
+              "human_review_recorded",
+              "outcome_recorded",
+              "automation_authorized",
+              "pilot_authorized",
+              "merge_authorized",
+              "deploy_authorized",
+              "production_effect_authorized",
+          ):
+              if result.get(field) is not False:
+                  raise SystemExit(f"AUTO2_CALIBRATION_AUTHORITY_VIOLATION:{field}")
+
+          expected = {
+              "authority_revision": "8ec5c0b4194522a50e395088d00b9bff5db9d24b",
+              "target_repository": "pie-peb3-lab/pie-peb3-calibration",
+              "target_pr": 8,
+              "target_head": "bee68c0635fb5001d42168ddac23de04b1e526df",
+              "target_base": "5673310fe66d74da5d31f165ffc4314e0d845740",
+              "request_sha256": "f59d36876dc3ef1ddb609584ea9b18998d45bdc39f162edb309e731350539dd3",
+          }
+          if result.get("authority", {}).get("revision") != expected["authority_revision"]:
+              raise SystemExit("AUTO2_CALIBRATION_AUTHORITY_REVISION_MISMATCH")
+          if result.get("target", {}).get("repository") != expected["target_repository"]:
+              raise SystemExit("AUTO2_CALIBRATION_TARGET_REPOSITORY_MISMATCH")
+          if result.get("target", {}).get("pull_request") != expected["target_pr"]:
+              raise SystemExit("AUTO2_CALIBRATION_TARGET_PR_MISMATCH")
+          if result.get("target", {}).get("head_sha") != expected["target_head"]:
+              raise SystemExit("AUTO2_CALIBRATION_TARGET_HEAD_MISMATCH")
+          if result.get("target", {}).get("base_sha") != expected["target_base"]:
+              raise SystemExit("AUTO2_CALIBRATION_TARGET_BASE_MISMATCH")
+          if result.get("trust_request", {}).get("content_sha256") != expected["request_sha256"]:
+              raise SystemExit("AUTO2_CALIBRATION_REQUEST_HASH_MISMATCH")
+
+          for field in ("packet_evidence_snapshot_sha256", "deterministic_result_sha256"):
+              value = result.get(field)
+              if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                  raise SystemExit(f"AUTO2_CALIBRATION_INVALID_HASH:{field}")
+          if not isinstance(result.get("packet_id"), str) or not result["packet_id"]:
+              raise SystemExit("AUTO2_CALIBRATION_PACKET_ID_MISSING")
+
+          bridge_root = Path(result["bridge_root"]).resolve()
+          runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve()
+          bridge_root.relative_to(runner_temp)
+          staging = runner_temp / "auto2-upload"
+          if staging.exists():
+              shutil.rmtree(staging)
+          shutil.copytree(bridge_root, staging / "bridge")
+          shutil.copy2(result_file, staging / "cli-result.json")
+          replay_context = {
+              "schema_version": "PIE_AUTO2_REPLAY_CALIBRATION_CONTEXT_V1",
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "harness_head": os.environ["GITHUB_SHA"],
+              "target_head": expected["target_head"],
+              "authority_revision": expected["authority_revision"],
+              "packet_id": result["packet_id"],
+              "packet_evidence_snapshot_sha256": result["packet_evidence_snapshot_sha256"],
+              "deterministic_result_sha256": result["deterministic_result_sha256"],
+              "authority_flags": {
+                  "human_review_recorded": False,
+                  "outcome_recorded": False,
+                  "automation_authorized": False,
+                  "pilot_authorized": False,
+                  "merge_authorized": False,
+                  "deploy_authorized": False,
+                  "production_effect_authorized": False,
+              },
+          }
+          (staging / "replay-context.json").write_text(
+              json.dumps(replay_context, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"packet_id={result['packet_id']}\n")
+              handle.write(f"snapshot={result['packet_evidence_snapshot_sha256']}\n")
+              handle.write(f"deterministic={result['deterministic_result_sha256']}\n")
+              handle.write(f"upload_path={staging}\n")
+          PY
+
+      - name: Upload replay evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto2-replay-${{ github.run_id }}
+          path: ${{ steps.bridge.outputs.upload_path }}
+          if-no-files-found: error
