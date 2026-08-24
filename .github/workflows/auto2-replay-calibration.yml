@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check \
-            "git+https://github.com/gycha0109-beep/Project_Intelligence_Engine.git@8ec5c0b4194522a50e395088d00b9bff5db9d24b"
+            "git+https://github.com/gycha0109-beep/Project_Intelligence_Engine.git@8a24b1f9e340c8a3045f77efb7b0e81a8ac4401f"
           pie-trust-prospective run-github-pr-trusted --help >/dev/null
 
       - name: Run governed AUTO-2 bridge core
@@ -60,7 +60,7 @@ jobs:
             --target-repository pie-peb3-lab/pie-peb3-calibration \
             --event-head-sha bee68c0635fb5001d42168ddac23de04b1e526df \
             --event-base-sha 5673310fe66d74da5d31f165ffc4314e0d845740 \
-            --pie-revision 8ec5c0b4194522a50e395088d00b9bff5db9d24b \
+            --pie-revision 8a24b1f9e340c8a3045f77efb7b0e81a8ac4401f \
             --trust-request-path evidence/trust/requests/auto2-synthetic-calibration-pr8-20260824.json \
             --trust-request-sha256 f59d36876dc3ef1ddb609584ea9b18998d45bdc39f162edb309e731350539dd3 \
             --repository-root "${GITHUB_WORKSPACE}" \
@@ -95,7 +95,7 @@ jobs:
                   raise SystemExit(f"AUTO2_CALIBRATION_AUTHORITY_VIOLATION:{field}")
 
           expected = {
-              "authority_revision": "8ec5c0b4194522a50e395088d00b9bff5db9d24b",
+              "authority_revision": "8a24b1f9e340c8a3045f77efb7b0e81a8ac4401f",
               "target_repository": "pie-peb3-lab/pie-peb3-calibration",
               "target_pr": 8,
               "target_head": "bee68c0635fb5001d42168ddac23de04b1e526df",
