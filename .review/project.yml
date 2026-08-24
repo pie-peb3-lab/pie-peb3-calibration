@@ -1,0 +1,35 @@
+schema_version: "1.0"
+project:
+  id: pie-auto1b-calibration
+  name: PIE AUTO-1B Calibration
+  type: web-application
+  repository_root: "."
+  baseline_branch: main
+inherits:
+  - nextjs-supabase
+technology:
+  languages: [python]
+  frameworks: []
+  database:
+    engine: postgresql
+scope:
+  include: ["src/**", ".review/**", ".github/workflows/auto1b-synthetic.yml"]
+  exclude: [".pie/**"]
+protected_paths: []
+commands:
+  baseline: []
+  integration: []
+review:
+  packs:
+    - universal.architecture
+    - universal.requirements-traceability
+    - universal.test-completeness
+gate:
+  block_on: [P0, P1]
+  require:
+    baseline_tests: false
+    regression_tests: false
+constraints:
+  production_changes_allowed: false
+  hosted_database_changes_allowed: false
+  external_network_allowed: false
