@@ -158,7 +158,7 @@ def _write_evaluation(root: Path, source_revision: str) -> Path:
 def _source(head: str, base: str, pr_number: int) -> dict:
     value = {
         "schema_version": "1.0",
-        "source": "synthetic-auto3-calibration",
+        "source": "github-cli",
         "retrieved_at": "2026-08-24T05:11:00Z",
         "repository": {
             "hostname": "github.com",
