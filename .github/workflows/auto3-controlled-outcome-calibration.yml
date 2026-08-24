@@ -1,0 +1,128 @@
+name: AUTO-3 Controlled Outcome Calibration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".pie-auto3/**"
+      - "src/auto3_calibration.py"
+      - ".github/workflows/auto3-controlled-outcome-calibration.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  controlled-outcome:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact calibration head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify calibration-only target
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "${actual,,}" = "${EXPECTED_HEAD,,}"
+          test -f src/auto3_calibration.py
+          test -f .pie-auto3/run_controlled_outcome_calibration.py
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact PIE authority revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check \
+            "git+https://github.com/gycha0109-beep/Project_Intelligence_Engine.git@6fc3be0d2ed29cf3a51929fc4f6f42bcb157cb65"
+          pie-trust-prospective --help >/dev/null
+
+      - name: Run synthetic controlled Outcome calibration
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf auto3c-evidence
+          python .pie-auto3/run_controlled_outcome_calibration.py \
+            --head "${HEAD_SHA}" \
+            --base "${BASE_SHA}" \
+            --pr-number "${PR_NUMBER}" \
+            --output auto3c-evidence \
+            > auto3c-result.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          result = json.loads(Path("auto3c-result.json").read_text(encoding="utf-8"))
+          if result.get("status") != "AUTO3_CONTROLLED_CALIBRATION_PASS":
+              raise SystemExit("AUTO3C_CALIBRATION_FAILED: terminal status mismatch")
+          if result.get("calibration_only") is not True or result.get("synthetic_evidence") is not True:
+              raise SystemExit("AUTO3C_CALIBRATION_FAILED: synthetic calibration markers missing")
+          if result.get("eligible_for_pilot_evidence") is not False:
+              raise SystemExit("AUTO3C_AUTHORITY_VIOLATION: calibration cannot become pilot evidence")
+          first = result.get("first_transport", {})
+          replay = result.get("replay_transport", {})
+          if first.get("reconciliation_status") != "RECONCILED" or first.get("idempotent") is not False:
+              raise SystemExit("AUTO3C_CALIBRATION_FAILED: first transport is invalid")
+          if replay.get("reconciliation_status") != "RECONCILED" or replay.get("idempotent") is not True:
+              raise SystemExit("AUTO3C_CALIBRATION_FAILED: replay transport is not idempotent")
+          if first.get("event_id") != replay.get("event_id"):
+              raise SystemExit("AUTO3C_CALIBRATION_FAILED: replay changed event identity")
+          for field in (
+              "automatic_outcome_inference",
+              "automation_authorized",
+              "pilot_authorized",
+              "merge_authorized",
+              "deploy_authorized",
+              "production_effect_authorized",
+          ):
+              if result.get(field) is not False:
+                  raise SystemExit(f"AUTO3C_AUTHORITY_VIOLATION: {field} must remain false")
+
+          Path("auto3c-evidence/result.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          Path("auto3c-evidence/README.txt").write_text(
+              "Synthetic AUTO-3 controlled Outcome calibration only.\n"
+              "Not real R0 evidence. Not pilot eligibility evidence. Not production authority.\n",
+              encoding="utf-8",
+          )
+          Path("${GITHUB_STEP_SUMMARY}" if False else "/dev/null")
+          PY
+
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          result = json.loads(Path("auto3c-result.json").read_text(encoding="utf-8"))
+          print("# AUTO-3 Controlled Outcome Calibration")
+          print()
+          print(f"- Status: `{result['status']}`")
+          print(f"- Assessment: `{result['assessment_id']}`")
+          print(f"- Evaluation: `{result['evaluation_id']}`")
+          print(f"- Declaration: `{result['declaration_id']}`")
+          print(f"- Outcome event: `{result['first_transport']['event_id']}`")
+          print(f"- First reconciliation: `{result['first_transport']['reconciliation_status']}`")
+          print(f"- Replay idempotent: `{result['replay_transport']['idempotent']}`")
+          print("- Pilot evidence: `NO — SYNTHETIC CALIBRATION ONLY`")
+          print("- Production effect authority: `NOT GRANTED`")
+          PY
+
+      - name: Upload AUTO-3C evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto3-controlled-outcome-${{ github.run_id }}
+          path: auto3c-evidence
