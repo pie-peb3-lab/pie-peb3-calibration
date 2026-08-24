@@ -5,7 +5,7 @@ components:
   - id: calibration
     name: Calibration
     paths: ["src/**"]
-  - id: review_config
+  - id: review-config
     name: Review Config
     paths: [".review/**"]
   - id: workflow
