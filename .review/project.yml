@@ -1,0 +1,25 @@
+schema_version: "1.0"
+project:
+  id: pie-auto2-calibration
+  name: PIE AUTO-2 Synthetic Calibration
+  type: calibration
+  repository_root: "."
+  baseline_branch: main
+technology:
+  languages: [markdown, text]
+scope:
+  include: [".pie-auto2/**"]
+  exclude: [".git/**", ".github/**", ".review/**", ".pie-calibration/**"]
+protected_paths: []
+review:
+  packs:
+    - universal.architecture
+gate:
+  block_on: [P0]
+  require:
+    baseline_tests: false
+    regression_tests: false
+constraints:
+  production_changes_allowed: false
+  hosted_database_changes_allowed: false
+  external_network_allowed: false

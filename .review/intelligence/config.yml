@@ -1,0 +1,7 @@
+schema_version: "1.0"
+graph:
+  max_file_size_bytes: 1000000
+components:
+  - id: calibration
+    paths:
+      - ".pie-auto2/**"
