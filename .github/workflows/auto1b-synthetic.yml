@@ -1,0 +1,20 @@
+name: AUTO-1B Synthetic Caller
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pie:
+    uses: gycha0109-beep/Project_Intelligence_Engine/.github/workflows/prospective-pr.yml@790b41788cde416db5633502006459191abfe45f
+    with:
+      repository: ${{ github.repository }}
+      pull_request_number: ${{ github.event.pull_request.number }}
+      event_head_sha: ${{ github.event.pull_request.head.sha }}
+      pie_revision: 790b41788cde416db5633502006459191abfe45f
+      profile: .review/project.yml
+      config: .review/intelligence/config.yml

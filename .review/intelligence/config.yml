@@ -1,0 +1,13 @@
+schema_version: "1.0"
+graph:
+  max_file_size_bytes: 1000000
+components:
+  - id: calibration
+    name: Calibration
+    paths: ["src/**"]
+  - id: review-config
+    name: Review Config
+    paths: [".review/**"]
+  - id: workflow
+    name: Workflow
+    paths: [".github/workflows/auto1b-synthetic.yml"]
